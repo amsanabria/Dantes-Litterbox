@@ -124,7 +124,8 @@ def identify_cover_local(image_path: str) -> dict:
             "This is a video game cover. "
             "Identify the platform or console shown or indicated by the cover. "
             f"Choose exactly one from: {platforms}. "
-            "Answer with exactly one option from the list.",
+            "Answer with exactly one option from the list." \
+            "If no platform suits answer 'unknown'",
             tokenizer,
         ).strip()
 

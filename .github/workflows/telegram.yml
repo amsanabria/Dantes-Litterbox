@@ -1,4 +1,5 @@
 name: Telegram Bot
+
 on:
   repository_dispatch:
     types: [telegram_message]
@@ -6,7 +7,8 @@ on:
 jobs:
   process:
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # margen de sobra para descarga+carga del modelo
+    timeout-minutes: 15
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -15,12 +17,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
 
       - name: Cache modelo de visión
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-model-moondream2-v1
+          key: hf-model-moondream2-2024-08-26
+          restore-keys: |
+            hf-model-moondream2-
 
       - name: Install dependencies
         run: pip install -r requirements.txt
