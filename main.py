@@ -12,6 +12,15 @@ MODEL_REVISION = "2024-08-26"
 _model = None
 _tokenizer = None
 
+MOVIE_FORMATS = [
+    "DVD",
+    "Blu-Ray",
+    "4K Blu-Ray"
+    "Criterion Collection DVD",
+    "Criterion Collection Blu-Ray",
+    "Criterion Collection 4K Blu-Ray",
+]
+
 VIDEOGAME_PLATFORMS = [
     # Playstation
     "PlayStation 1",
@@ -41,8 +50,8 @@ VIDEOGAME_PLATFORMS = [
     "Nintendo DS",
     "Nintendo 3DS",
     # Sega
-    "Megadrive"
-    "Master System"
+    "Megadrive",
+    "Master System",
     "Dreamcast",
     # Other
     "PC",
@@ -99,35 +108,47 @@ def identify_cover_local(image_path: str) -> dict:
             tokenizer,
         ).strip().upper()
 
+    if "GAME" in media_type:
+            media_type = "game"
+    elif "MOVIE" in media_type:
+        media_type = "movie"
+    else:
+        media_type = "unknown"
+
+    print(f"Media type: {media_type}")
+
     # 2. Identify title
     title = model.answer_question(
         enc_image,
         "What is the exact title shown on this cover? Don't say anything else, just the title",
         tokenizer,
     ).strip() 
-    
 
-    if "GAME" in media_type:
-        media_type = "game"
-    elif "MOVIE" in media_type:
-        media_type = "movie"
-    else:
-        media_type = "unknown"
+    print(f"Title: {title}")
 
     # 3. If videogame identify platform
-    platforms = ", ".join(VIDEOGAME_PLATFORMS)
+    platforms = 'unknown'
 
-    if media_type == "game":
-        platform = model.answer_question(
-            enc_image,
-            "PLATFORM CLASSIFICATION TASK. "
-            "This is a video game cover. "
-            "Identify the platform or console shown or indicated by the cover. "
-            f"Choose exactly one from: {platforms}. "
-            "Answer with exactly one option from the list." \
-            "If no platform suits answer 'unknown'",
-            tokenizer,
-        ).strip()
+    if media_type == 'game':
+        platforms = ", ".join(VIDEOGAME_PLATFORMS)
+    if media_type == 'movie':
+        platforms = ", ".join(MOVIE_FORMATS)
+
+
+
+    platform = model.answer_question(
+        enc_image,
+        "PLATFORM CLASSIFICATION TASK. "
+        f"This is a {media_type} cover. "
+        "Identify the platform shown or indicated by the cover. "
+        f"Choose exactly one from: {platforms}. "
+        "Answer with exactly one option from the list." \
+        "If no platform suits answer 'unknown'",
+        tokenizer,
+    ).strip()
+
+    print(f"Platform: {platform}")
+
 
     result = {
         "type": media_type,
