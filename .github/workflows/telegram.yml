@@ -1,0 +1,15 @@
+name: Telegram Bot
+on:
+  repository_dispatch:
+    types: [telegram_message]
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show payload
+        run: |
+          echo "chat_id: ${{ github.event.client_payload.chat_id }}"
+          echo "message_id: ${{ github.event.client_payload.message_id }}"
+          echo "text: ${{ github.event.client_payload.text }}"
+          echo "file_id: ${{ github.event.client_payload.file_id }}"
