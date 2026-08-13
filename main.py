@@ -12,6 +12,42 @@ MODEL_REVISION = "2024-08-26"
 _model = None
 _tokenizer = None
 
+VIDEOGAME_PLATFORMS = [
+    # Playstation
+    "PlayStation 1",
+    "PlayStation 2",
+    "PlayStation 3",
+    "PlayStation 4",
+    "PlayStation 5",
+    "PSP",
+    "PS Vita",
+    # XBOX
+    "Xbox",
+    "Xbox 360",
+    "Xbox One",
+    "Xbox Series X/S",
+    # Nintendo
+    "NES",
+    "SNES",
+    "Nintendo 64",
+    "GameCube",
+    "Wii",
+    "Wii U",
+    "Switch",
+    "Switch 2",
+    "Game Boy",
+    "Game Boy Color",
+    "Game Boy Advance",
+    "Nintendo DS",
+    "Nintendo 3DS",
+    # Sega
+    "Megadrive"
+    "Master System"
+    "Dreamcast",
+    # Other
+    "PC",
+    "Unknown",
+]
 
 def get_model():
     """Carga el modelo una sola vez por ejecución (lazy load)."""
@@ -52,28 +88,62 @@ def identify_cover_local(image_path: str) -> dict:
     image = Image.open(image_path)
     enc_image = model.encode_image(image)
 
-    prompt = (
-        "This is the cover of a movie or a video game. "
-        "Identify whether it is a movie or a game, and give its exact title. "
-        "Answer in the format: TYPE: <movie or game> | TITLE: <exact title>"
-    )
-    raw_answer = model.answer_question(enc_image, prompt, tokenizer)
-    print("Respuesta cruda del modelo:", raw_answer)
+    # 1. Classify movie or videogame
+    media_type = model.answer_question(
+            enc_image,
+            "CLASSIFICATION TASK. "
+            "This image is either a video game cover or a movie cover. "
+            "If it is a video game, answer GAME. "
+            "If it is a movie, answer MOVIE. "
+            "Answer with exactly one word: GAME or MOVIE.",
+            tokenizer,
+        ).strip().upper()
 
-    # Parseo simple del formato pedido; si el modelo no lo respeta,
-    # devolvemos todo como título y dejamos "unknown" en type.
-    result = {"type": "unknown", "title": raw_answer.strip(), "raw": raw_answer}
-    try:
-        parts = raw_answer.split("|")
-        type_part = parts[0].split(":")[1].strip().lower()
-        title_part = parts[1].split(":")[1].strip()
-        result["type"] = "movie" if "movie" in type_part else "game"
-        result["title"] = title_part
-    except (IndexError, ValueError):
-        pass
+    # 2. Identify title
+    title = model.answer_question(
+        enc_image,
+        "What is the exact title shown on this cover? Don't say anything else, just the title",
+        tokenizer,
+    ).strip() 
+    
+
+    if "GAME" in media_type:
+        media_type = "game"
+    elif "MOVIE" in media_type:
+        media_type = "movie"
+    else:
+        media_type = "unknown"
+
+    # 3. If videogame identify platform
+    platforms = ", ".join(VIDEOGAME_PLATFORMS)
+
+    if media_type == "game":
+        platform = model.answer_question(
+            enc_image,
+            "PLATFORM CLASSIFICATION TASK. "
+            "This is a video game cover. "
+            "Identify the platform or console shown or indicated by the cover. "
+            f"Choose exactly one from: {platforms}. "
+            "Answer with exactly one option from the list.",
+            tokenizer,
+        ).strip()
+
+    result = {
+        "type": media_type,
+        "title": title,
+        "platform": platform,
+        "raw": {
+            "title": title,
+            "type": media_type,
+            "platform": platform,
+        },
+    }
+
+    print("Respuesta título:", title)
+    print("Respuesta tipo:", media_type)
+    print("Respuesta plataforma:", platform)
 
     return result
-
 
 def main():
     file_id = os.environ.get("FILE_ID")
