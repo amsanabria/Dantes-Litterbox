@@ -6,10 +6,30 @@ on:
 jobs:
   process:
     runs-on: ubuntu-latest
+    timeout-minutes: 15 # margen de sobra para descarga+carga del modelo
     steps:
-      - name: Show payload
-        run: |
-          echo "chat_id: ${{ github.event.client_payload.chat_id }}"
-          echo "message_id: ${{ github.event.client_payload.message_id }}"
-          echo "text: ${{ github.event.client_payload.text }}"
-          echo "file_id: ${{ github.event.client_payload.file_id }}"
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache modelo de visión
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-model-moondream2-v1
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+          MESSAGE_ID: ${{ github.event.client_payload.message_id }}
+          TEXT: ${{ github.event.client_payload.text }}
+          FILE_ID: ${{ github.event.client_payload.file_id }}
+        run: python main.py
