@@ -146,49 +146,63 @@ def create_messages(system_prompt, user_prompt):
 
 
 def correct_identification(
+    previous_result: dict,
     correction_text: str,
 ) -> dict:
 
     system_prompt = (
-        "Extract corrections from the user's message.\n\n"
+        "You extract corrections from the user's message.\n\n"
 
-        "You MUST check each field independently:\n"
-        "TYPE: Is the user explicitly saying that the item is a movie or a game?\n"
-        "TITLE: Is the user explicitly correcting/providing the title?\n"
-        "PLATFORM: Is the user explicitly correcting/providing the platform?\n\n"
+        "Check each field independently:\n"
+        "- TYPE: whether the user says it is a movie or a game\n"
+        "- TITLE: whether the user changes the title\n"
+        "- PLATFORM: whether the user changes the platform or format\n\n"
 
-        "For TYPE, only output 'movie' or 'game'.\n"
-        "For TITLE, output the title stated by the user.\n"
-        "For PLATFORM, output the platform stated by the user.\n\n"
+        "Only return fields that the user explicitly changes.\n"
+        "Do not return unchanged fields.\n"
+        "Do not infer corrections.\n"
+        "Do not modify values that the user provides.\n"
+        "Do not expand or normalize titles.\n"
+        "Return ONLY valid JSON.\n\n"
 
-        "Return every field that the user explicitly mentions.\n"
-        "Return ONLY JSON.\n\n"
-
-        "NEVER change, expand, normalize, translate, or correct the user's value."
-        "Copy the value provided by the user as closely as possible."
+        "TYPE must be either 'movie' or 'game'.\n\n"
 
         "Example:\n"
-        'Current: {"type":"game","title":"Devil May Cry 2","platform":"Unknown"}\n'
-        'Correction: "The platform is DVD and the title is SpongeBob and it is a movie"\n'
-        'Output: {"type":"movie","title":"SpongeBob","platform":"DVD"}'
+        'Current identification: '
+        '{"type":"game","title":"Devil May Cry 2","platform":"PlayStation 2"}\n'
+        'User correction: "Actually it is Devil May Cry 3"\n'
+        'Output: {"title":"Devil May Cry 3"}\n\n'
+
+        'Example:\n'
+        'Current identification: '
+        '{"type":"game","title":"Devil May Cry 2","platform":"PlayStation 2"}\n'
+        'User correction: "It is a movie"\n'
+        'Output: {"type":"movie"}\n\n'
+
+        'Example:\n'
+        'Current identification: '
+        '{"type":"game","title":"Devil May Cry 2","platform":"PlayStation 2"}\n'
+        'User correction: "The platform is Xbox"\n'
+        'Output: {"platform":"Xbox"}'
     )
 
     user_prompt = (
-            f"Current identification:\n"
-            f"User correction:\n{correction_text}"
-        )
+        f"Current identification:\n"
+        f"{json.dumps(previous_result, ensure_ascii=False)}\n\n"
+        f"User correction:\n"
+        f"{correction_text}"
+    )
 
-    messages = create_messages(system_prompt=system_prompt, user_prompt=user_prompt)
+    messages = create_messages(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+
     raw_answer = invoke_model(messages=messages)
-    
 
     print(
         f"Correction model raw answer: {raw_answer}"
     )
-
-    # -------------------------------------------------
-    # Extract JSON
-    # -------------------------------------------------
 
     candidates = re.findall(
         r"\{.*?\}",
@@ -196,28 +210,22 @@ def correct_identification(
         re.DOTALL,
     )
 
-    changes = None
-
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
 
             if isinstance(parsed, dict):
-                changes = parsed
-                break
+                return parsed
 
         except json.JSONDecodeError:
             continue
 
-    if changes is None:
-        print(
-            "Could not parse correction JSON: "
-            "no valid JSON object found"
-        )
+    print(
+        "Could not parse correction JSON: "
+        "no valid JSON object found"
+    )
 
-        changes = {}
-
-    return changes
+    return {}
 
 def identify_platform(platform: str, type: str) -> str:
     if type == "game":
@@ -307,15 +315,42 @@ def handle_correction(
         reply_to_message_text
     )
 
+    print(
+        "Previous identification:",
+        json.dumps(
+            previous_result,
+            ensure_ascii=False,
+        ),
+    )
+
+    print(
+        "User correction:",
+        repr(correction_text),
+    )
+
     change_fields = correct_identification(
+        previous_result=previous_result,
         correction_text=correction_text,
     )
 
-    if "platform" in change_fields.keys():
-        change_fields['platform'] = identify_platform(change_fields['platform'], change_fields.get('type', previous_result['type']))
+    # Normalize platform only if the user actually changed it
+    if "platform" in change_fields:
+        change_fields["platform"] = identify_platform(
+            change_fields["platform"],
+            change_fields.get(
+                "type",
+                previous_result["type"],
+            ),
+        )
+
+    # Apply corrections to the previous identification
+    corrected_result = {
+        **previous_result,
+        **change_fields,
+    }
 
     response_text = format_identification_result(
-        change_fields
+        corrected_result
     )
 
     sent_message = send_telegram_message(
@@ -328,7 +363,7 @@ def handle_correction(
     print(
         "Corrected identification:",
         json.dumps(
-            change_fields,
+            corrected_result,
             ensure_ascii=False,
         ),
     )
