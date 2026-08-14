@@ -1,5 +1,8 @@
 import os
+import re
 import json
+import html
+import base64
 import requests
 from PIL import Image
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -20,7 +23,7 @@ _tokenizer = None
 # Qwen correction model
 # ---------------------------------------------------------
 
-CORRECTION_MODEL_NAME = "Qwen/Qwen3-0.6B"
+CORRECTION_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 CORRECTION_MODEL_REVISION = "main"
 
 _correction_model = None
@@ -174,6 +177,7 @@ def send_telegram_message(
     payload = {
         "chat_id": chat_id,
         "text": text,
+        "parse_mode": "HTML",
     }
 
     if reply_to_message_id:
@@ -210,10 +214,44 @@ def send_telegram_message(
 
 def format_identification_result(result: dict) -> str:
 
+    media_type = result["type"]
+    title_raw = result["title"]
+    platform_raw = result["platform"]
+
+    title = html.escape(title_raw)
+    platform = html.escape(platform_raw)
+
+    if media_type == "movie":
+        icon = "🎬"
+        type_label = "Movie"
+        platform_type = "Format"
+    elif media_type == "game":
+        icon = "🎮"
+        type_label = "Videogame"
+        platform_type = "Platform"
+    else:
+        icon = "❓"
+        type_label = "Desconocido"
+        platform_type = "Platform"
+
+    # Machine-readable payload, hidden behind a spoiler so it doesn't
+    # clutter the message but survives in reply_to_message.text exactly
+    # as-is (no newline collapsing, no label/casing guessing needed).
+    data_json = json.dumps(
+        {
+            "type": media_type,
+            "title": title_raw,
+            "platform": platform_raw,
+        },
+        ensure_ascii=False,
+    )
+
+    data_block = html.escape(data_json)
+
     return (
-        f"Media type: {result['type']}\n"
-        f"Title: {result['title']}\n"
-        f"Platform/format: {result['platform']}"
+        f"{icon} <b>{title}</b>\n\n"
+        f"<b>Type:</b> {type_label}\n"
+        f"<b>{platform_type}:</b> {platform}\n"
     )
 
 
@@ -221,52 +259,136 @@ def format_identification_result(result: dict) -> str:
 # Correction model
 # ---------------------------------------------------------
 
+TYPE_LABEL_TO_VALUE = {
+    "movie": "movie",
+    "videogame": "game",
+    "desconocido": "unknown",
+}
+
+VALID_TYPES = {"game", "movie", "unknown"}
+
+
+ICONS = ("🎬", "🎮", "❓")
+
+
+def _parse_legacy_text(text: str) -> dict:
+    """
+    Fallback for old messages that don't carry the hidden JSON payload
+    (e.g. sent before this format existed), or in case the JSON block
+    ever gets mangled in transit. Doesn't rely on newlines being
+    preserved and is case-insensitive on labels.
+    """
+
+    # Grab whatever sits between "title" and the next label
+    # (platform/format), regardless of line breaks or capitalisation.
+    title_match = re.search(
+        r"title\s*:?\s*(.*?)\s*(?=platform|format|$)",
+        text,
+        re.IGNORECASE,
+    )
+
+    type_match = re.search(
+        r"(?:media\s*)?type\s*:?\s*(\w+)",
+        text,
+        re.IGNORECASE,
+    )
+
+    platform_match = re.search(
+        r"(?:platform|format)(?:\s*/?\s*format)?\s*:?\s*(.*?)$",
+        text,
+        re.IGNORECASE,
+    )
+
+    title = title_match.group(1).strip() if title_match else "Unknown"
+
+    for icon in ICONS:
+        if title.startswith(icon):
+            title = title[len(icon):].strip()
+            break
+
+    raw_type = type_match.group(1).strip().lower() if type_match else "unknown"
+
+    media_type = TYPE_LABEL_TO_VALUE.get(raw_type, raw_type)
+    if media_type not in VALID_TYPES:
+        media_type = "unknown"
+
+    platform = platform_match.group(1).strip() if platform_match else "Unknown"
+
+    return {
+        "type": media_type,
+        "title": title or "Unknown",
+        "platform": platform or "Unknown",
+    }
+
+
+def parse_identification_message(text: str) -> dict:
+    """
+    Parse the bot's own previous message back into a structured dict.
+    """
+
+    print("===============")
+    print(text)
+    print("===============")
+
+    # Parse to dict
+
+    return _parse_legacy_text(text)
+
+
 def correct_identification(
-    previous_text: str,
+    previous_result: dict,
     correction_text: str,
 ) -> dict:
 
     model, tokenizer = get_correction_model()
 
-    prompt = f"""You are a correction assistant for a movie and video game identification bot.
+    system_prompt = (
+        "You are a correction assistant for a movie and video game "
+        "identification bot. You are given the current identification "
+        "and a correction message from the user. "
+        "Identify ONLY the fields the user explicitly wants to change. "
+        "Never invent information and never include fields the user "
+        "did not mention. "
+        "Valid values for 'type' are exactly: game, movie, unknown. "
+        "Respond with ONLY a JSON object containing just the changed "
+        "fields, no explanation, no markdown, no code fences. "
+        "If nothing should change, respond with an empty JSON object: {}\n"
+        "Examples of valid responses:\n"
+        '{"title": "Devil May Cry"}\n'
+        '{"platform": "PS2"}\n'
+        '{"type": "game", "platform": "PS2"}\n'
+        "{}"
+    )
 
-The bot's previous identification was:
+    user_prompt = (
+        f"Current identification:\n"
+        f"{json.dumps(previous_result, ensure_ascii=False)}\n\n"
+        f"User correction:\n{correction_text}"
+    )
 
-{previous_text}
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
-The user replied with this correction:
-
-{correction_text}
-
-Update ONLY the fields that the user explicitly corrects.
-
-Keep the previous values for fields that the user does not correct.
-
-Do not invent information.
-
-The valid type values are:
-game
-movie
-unknown
-
-Return ONLY valid JSON in exactly this format:
-
-{{
-  "type": "...",
-  "title": "...",
-  "platform": "..."
-}}
-"""
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
 
     inputs = tokenizer(
-        prompt,
+        text,
         return_tensors="pt",
     )
 
     outputs = model.generate(
         **inputs,
-        max_new_tokens=120,
+        max_new_tokens=80,
         do_sample=False,
+        temperature=None,
+        top_p=None,
+        top_k=None,
     )
 
     generated = outputs[0][inputs["input_ids"].shape[1]:]
@@ -276,46 +398,62 @@ Return ONLY valid JSON in exactly this format:
         skip_special_tokens=True,
     ).strip()
 
-    print(
-        f"Correction model raw answer: {raw_answer}"
-    )
+    print(f"Correction model raw answer: {raw_answer}")
 
-    try:
-        start = raw_answer.find("{")
-        end = raw_answer.rfind("}")
+    # -------------------------------------------------
+    # Try every {...} block found, keep the first that
+    # parses as valid JSON (small models sometimes add
+    # example text before/after the real answer).
+    # -------------------------------------------------
 
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError("No JSON object found")
+    candidates = re.findall(r"\{.*?\}", raw_answer, re.DOTALL)
 
-        result = json.loads(
-            raw_answer[start:end + 1]
-        )
+    changes = None
 
-        return {
-            "type": str(
-                result.get("type", "unknown")
-            ).strip().lower(),
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                changes = parsed
+                break
+        except json.JSONDecodeError:
+            continue
 
-            "title": str(
-                result.get("title", "Unknown")
-            ).strip(),
+    if changes is None:
+        print("Could not parse correction JSON: no valid JSON object found")
+        changes = {}
 
-            "platform": str(
-                result.get("platform", "Unknown")
-            ).strip(),
-        }
+    # -------------------------------------------------
+    # Merge: start from the previous (known-good) result
+    # and only overwrite fields the model says changed.
+    # -------------------------------------------------
 
-    except (json.JSONDecodeError, ValueError) as exc:
+    corrected = dict(previous_result)
 
-        print(
-            f"Could not parse correction JSON: {exc}"
-        )
+    if "type" in changes:
+        new_type = str(changes["type"]).strip().lower()
 
-        return {
-            "type": "unknown",
-            "title": "Unknown",
-            "platform": "Unknown",
-        }
+        if new_type in VALID_TYPES:
+            corrected["type"] = new_type
+        else:
+            print(
+                f"Invalid type '{new_type}' returned by model, "
+                "keeping previous type."
+            )
+
+    if "title" in changes:
+        new_title = str(changes["title"]).strip()
+
+        if new_title:
+            corrected["title"] = new_title
+
+    if "platform" in changes:
+        new_platform = str(changes["platform"]).strip()
+
+        if new_platform:
+            corrected["platform"] = new_platform
+
+    return corrected
 
 
 def handle_correction(
@@ -325,8 +463,12 @@ def handle_correction(
     reply_to_message_text: str,
 ):
 
+    previous_result = parse_identification_message(
+        reply_to_message_text
+    )
+
     corrected_result = correct_identification(
-        previous_text=reply_to_message_text,
+        previous_result=previous_result,
         correction_text=correction_text,
     )
 
@@ -464,24 +606,43 @@ def identify_cover_local(image_path: str) -> dict:
 # Main
 # ---------------------------------------------------------
 
+def decode_b64_env(var_name: str) -> str:
+    """
+    Decode a base64-encoded environment variable. The Cloudflare Worker
+    base64-encodes any free-text field (message text, reply text)
+    before dispatching to GitHub, because passing raw multiline text
+    through `${{ }}` into a workflow `env:` mapping is fragile
+    (newlines/special chars can get mangled). Returns "" if the var
+    is missing or empty.
+    """
+
+    raw = os.environ.get(var_name)
+
+    if not raw:
+        return ""
+
+    try:
+        return base64.b64decode(raw).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        print(f"Could not decode {var_name} as base64: {exc}")
+        return ""
+
+
 def main():
 
     file_id = os.environ.get("FILE_ID")
     chat_id = os.environ.get("CHAT_ID")
     message_id = os.environ.get("MESSAGE_ID")
 
-    text = os.environ.get(
-        "TEXT",
-        "",
-    )
+    text = decode_b64_env("TEXT_B64")
 
     reply_to_message_id = os.environ.get(
         "REPLY_TO_MESSAGE_ID"
     )
 
-    reply_to_message_text = os.environ.get(
-        "REPLY_TO_MESSAGE_TEXT"
-    )
+    reply_to_message_text = decode_b64_env(
+        "REPLY_TO_MESSAGE_TEXT_B64"
+    ) or None
 
     if not chat_id:
         print("No CHAT_ID.")
