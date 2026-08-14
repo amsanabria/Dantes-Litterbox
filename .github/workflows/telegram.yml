@@ -36,8 +36,8 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ github.event.client_payload.chat_id }}
           MESSAGE_ID: ${{ github.event.client_payload.message_id }}
-          TEXT: ${{ github.event.client_payload.text }}
+          TEXT_B64: ${{ github.event.client_payload.text_b64 }}
           FILE_ID: ${{ github.event.client_payload.file_id }}
           REPLY_TO_MESSAGE_ID: ${{ github.event.client_payload.reply_to_message_id }}
-          REPLY_TO_MESSAGE_TEXT: ${{ github.event.client_payload.reply_to_message_text }}
+          REPLY_TO_MESSAGE_TEXT_B64: ${{ github.event.client_payload.reply_to_message_text_b64 }}
         run: python main.py
